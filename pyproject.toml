@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qricambi-api-connector"
+version = "1.0.0"
+description = "Python client for the QRicambi API (api.qricambi.com)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Kefa Brain"}]
+dependencies = ["requests>=2.28"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "responses>=0.23"]
+
+[tool.setuptools.packages.find]
+include = ["qricambi*"]
