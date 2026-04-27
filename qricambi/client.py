@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import time
-from typing import Any
+from typing import Any, Optional
 
 import requests
 
@@ -28,11 +29,15 @@ from .models import (
 )
 
 BASE_URL = "https://api.qricambi.com"
+AUTH_URL = "https://app.qricambi.com/api"
 SEARCH_MIN_INTERVAL = 30  # seconds between search requests
 
 
 class QRicambiClient:
     """Python client for the QRicambi API.
+
+    Create with a token directly, or use the ``login()`` class method
+    to authenticate with username/password.
 
     Args:
         token: Bearer JWT token for authentication.
@@ -54,6 +59,72 @@ class QRicambiClient:
             {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         )
         self._last_search_time: float = 0.0
+        self._token_expires: str = ""
+        self._remember_key: str = ""
+
+    # ── Authentication ───────────────────────────────────────────────
+
+    @classmethod
+    def login(
+        cls,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        base_url: str = BASE_URL,
+        timeout: int = 30,
+    ) -> "QRicambiClient":
+        """Authenticate with username/password and return a ready client.
+
+        Credentials can be passed directly or via environment variables:
+          - QRICAMBI_USERNAME
+          - QRICAMBI_PASSWORD
+
+        Args:
+            username: QRicambi account email.
+            password: QRicambi account password.
+        """
+        username = username or os.environ.get("QRICAMBI_USERNAME", "")
+        password = password or os.environ.get("QRICAMBI_PASSWORD", "")
+        if not username or not password:
+            raise AuthenticationError(
+                "Username and password required. Pass them directly or set "
+                "QRICAMBI_USERNAME / QRICAMBI_PASSWORD environment variables.",
+                status_code=None,
+            )
+        resp = requests.post(
+            f"{AUTH_URL}/User/RequestToken",
+            json={
+                "username": username.strip(),
+                "password": password.strip(),
+                "rememberMe": "true",
+            },
+            timeout=timeout,
+        )
+        if not resp.ok:
+            raise AuthenticationError(
+                f"Login failed ({resp.status_code}): {resp.text}",
+                status_code=resp.status_code,
+            )
+        data = resp.json()
+        token = data.get("token", "")
+        if not token:
+            raise AuthenticationError("Login response missing token", status_code=None)
+        client = cls(token=token, base_url=base_url, timeout=timeout)
+        client._token_expires = data.get("expires", "")
+        client._remember_key = data.get("rememberKey", "")
+        return client
+
+    @classmethod
+    def from_env(cls, base_url: str = BASE_URL, timeout: int = 30) -> "QRicambiClient":
+        """Create client from QRICAMBI_TOKEN env var, or login via env credentials."""
+        token = os.environ.get("QRICAMBI_TOKEN", "")
+        if token:
+            return cls(token=token, base_url=base_url, timeout=timeout)
+        return cls.login(base_url=base_url, timeout=timeout)
+
+    @property
+    def token_expires(self) -> str:
+        """ISO timestamp when the current token expires."""
+        return self._token_expires
 
     # ── HTTP helpers ─────────────────────────────────────────────────
 
@@ -102,21 +173,35 @@ class QRicambiClient:
             "/checkmysupplier",
             json={"supplier": supplier, "user": user, "password": password},
         )
-        return CheckSupplierResult.from_dict(resp.json())
+        data = resp.json()
+        if isinstance(data, list) and data:
+            return CheckSupplierResult.from_dict(data[0])
+        return CheckSupplierResult.from_dict(data)
 
     # ── Entity extraction ────────────────────────────────────────────
 
-    def extract_entities(self, text: str) -> list[EntityResult]:
-        """Extract entities (MARCA, MODELLO, TARGA, TELAIO, etc.) from text.
+    def extract_entities(self, text: str) -> list[dict]:
+        """Extract entities from text using QRicambi NLP.
 
-        Recognized entity types: MARCA, MODELLO, ALLESTIMENTO, DATA,
+        Returns parsed Quote objects with car info and quote items.
+        Input recognized: MARCA, MODELLO, ALLESTIMENTO, DATA,
         COD_MOTORE, TARGA, TELAIO, POTENZA, CILINDRATA, CODICE,
         DESCRIZIONE, DETTAGLIO, CONDIZIONE, MARCA_PROD, QUANTITA.
         """
+        import json as _json
         resp = self._request(
             "POST", "/entity/retrieves", json={"content": text}
         )
-        return [EntityResult.from_dict(e) for e in resp.json()]
+        data = resp.json()
+        # API returns a JSON string wrapping a list of Quote objects
+        if isinstance(data, str):
+            try:
+                data = _json.loads(data)
+            except _json.JSONDecodeError:
+                return [{"raw": data}]
+        if isinstance(data, list):
+            return data
+        return [data]
 
     # ── Orders ───────────────────────────────────────────────────────
 
@@ -210,11 +295,13 @@ class QRicambiClient:
 
     # ── Product lists ────────────────────────────────────────────────
 
-    def list_product_lists(self) -> list[ProductListItem]:
+    def list_product_lists(self) -> list[ProductList]:
         """Retrieve index of all product lists."""
         resp = self._request("GET", "/productlist")
         data = resp.json()
-        return [ProductListItem.from_dict(r) for r in data.get("rows", [])]
+        if isinstance(data, list):
+            return [ProductList.from_dict(r) for r in data]
+        return [ProductList.from_dict(r) for r in data.get("rows", data.get("results", []))]
 
     def create_product_list(self, name: str) -> ProductList:
         """Create a new empty product list."""
@@ -316,9 +403,25 @@ class QRicambiClient:
         if password:
             body["password"] = password
 
-        resp = self._request("POST", "/searchpriceandavailability", json=body)
+        try:
+            resp = self._request("POST", "/searchpriceandavailability", json=body)
+        except BadRequestError as e:
+            # Supplier login errors return 400 with "Incorrect login on ..."
+            if "incorrect login" in str(e).lower():
+                raise AuthenticationError(
+                    f"Supplier credentials invalid: {e}", status_code=400
+                ) from e
+            raise
         self._last_search_time = time.time()
-        return [SearchResult.from_dict(r) for r in resp.json()]
+        try:
+            data = resp.json()
+        except Exception:
+            return []
+        if not data:
+            return []
+        if isinstance(data, dict):
+            return [SearchResult.from_dict(data)]
+        return [SearchResult.from_dict(r) for r in data]
 
     # ── Vehicle ──────────────────────────────────────────────────────
 

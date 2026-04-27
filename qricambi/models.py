@@ -147,19 +147,23 @@ class ProductList:
     status_import: str = ""
     type_conf: str = ""
     expire_date: str = ""
+    alternative_name: str = ""
+    last_update: str = ""
 
     @classmethod
     def from_dict(cls, d: dict) -> ProductList:
         return cls(
-            id=d.get("id", ""),
-            name=d.get("name", ""),
-            created_at=d.get("createdat", ""),
-            updated_at=d.get("updatedat", ""),
-            active=d.get("active", True),
-            filename=d.get("filename", ""),
-            status_import=d.get("statusimport", ""),
-            type_conf=d.get("typeconf", ""),
-            expire_date=d.get("expiredate", ""),
+            id=d.get("ID", d.get("id", "")),
+            name=d.get("Name", d.get("name", "")),
+            created_at=d.get("CreatedAt", d.get("createdat", "")),
+            updated_at=d.get("UpdatedAt", d.get("updatedat", "")),
+            active=d.get("Active", d.get("active", True)),
+            filename=d.get("Filename", d.get("filename", "")),
+            status_import=str(d.get("statusimport", "")),
+            type_conf=d.get("TypeConf", d.get("typeconf", "")),
+            expire_date=d.get("ExpireDate", d.get("expiredate", "")),
+            alternative_name=d.get("AlternativeName", d.get("alternativename", "")),
+            last_update=d.get("LastUpdate", ""),
         )
 
 

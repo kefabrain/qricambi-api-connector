@@ -67,15 +67,12 @@ def test_extract_entities(client):
     responses.add(
         responses.POST,
         f"{BASE}/entity/retrieves",
-        json=[
-            {"entity_type": "MARCA", "text": "Piaggio"},
-            {"entity_type": "MODELLO", "text": "Porter"},
-        ],
+        json='[{"Quote":{"internalnote":"filtro olio piaggio porter","car":"Piaggio Porter","QuoteItems":[{"description":"Filtro olio","QuantitativeValue":1}]}}]',
     )
     entities = client.extract_entities("filtro olio Piaggio Porter")
-    assert len(entities) == 2
-    assert entities[0].entity_type == "MARCA"
-    assert entities[1].text == "Porter"
+    assert len(entities) == 1
+    assert "Quote" in entities[0]
+    assert entities[0]["Quote"]["car"] == "Piaggio Porter"
 
 
 # ── Orders ───────────────────────────────────────────────────────────
@@ -150,15 +147,15 @@ def test_create_product_list(client):
         responses.POST,
         f"{BASE}/productlist",
         json={
-            "id": "abc-123",
-            "name": "Test List",
-            "createdat": "2026-04-27",
-            "updatedat": "2026-04-27",
-            "active": True,
-            "filename": "",
+            "ID": "abc-123",
+            "Name": "Test List",
+            "CreatedAt": "2026-04-27",
+            "UpdatedAt": "2026-04-27",
+            "Active": True,
+            "Filename": "",
             "statusimport": "",
-            "typeconf": "",
-            "expiredate": "",
+            "TypeConf": "",
+            "ExpireDate": "",
         },
     )
     pl = client.create_product_list("Test List")
@@ -245,6 +242,38 @@ def test_vehicle_by_plate(client):
     assert v.plate == "AB123CD"
     assert v.manufacturer == "PIAGGIO"
     assert v.engine_code == "HC"
+
+
+# ── Login ────────────────────────────────────────────────────────────
+
+
+@responses.activate
+def test_login():
+    responses.add(
+        responses.POST,
+        "https://app.qricambi.com/api/User/RequestToken",
+        json={
+            "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test",
+            "expires": "2026-04-28T01:00:00Z",
+            "rememberKey": "abc-123",
+            "country": "Italia",
+            "countrycode": "IT",
+        },
+    )
+    client = QRicambiClient.login(username="test@test.com", password="test123")
+    assert client._token.startswith("eyJ")
+    assert client.token_expires == "2026-04-28T01:00:00Z"
+
+
+@responses.activate
+def test_search_null_response(client):
+    responses.add(
+        responses.POST, f"{BASE}/searchpriceandavailability", json=None
+    )
+    results = client.search_price_availability(
+        supplier="ACME", skus=["X"], respect_rate_limit=False
+    )
+    assert results == []
 
 
 # ── Error handling ───────────────────────────────────────────────────
